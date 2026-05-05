@@ -1,0 +1,161 @@
+// filepath: prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER MANAGEMENT (with Soft Delete)
+// ============================================
+
+model User {
+  id            Int       @id @default(autoincrement())
+  name          String
+  userId        String    @unique
+  password      String
+  role          String    @default("USER") // SUPERADMIN, ADMIN, USER
+  parentAdminId Int?      // Links Users to the Admin who created them
+  parentAdmin   User?     @relation("AdminUsers", fields: [parentAdminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdUsers  User[]    @relation("AdminUsers")
+  isBlocked     Boolean   @default(false)
+  isDeleted     Boolean   @default(false) // Soft delete — preserves Audit Log history
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  managedCategories Category[] @relation("AdminCategories")
+  userCategories    UserCategory[]
+  folders           Folder[]     @relation("AdminFolders")
+  auditLogs         AuditLog[]
+
+  // Performance indexes for soft-delete filtered queries
+  @@index([isDeleted])
+  @@index([parentAdminId])
+  @@index([role, isDeleted])
+}
+
+// ============================================
+// CATEGORIES (Teams like FI team, Soft team) - Hard Delete (Protected)
+// ============================================
+
+model Category {
+  id        Int      @id @default(autoincrement())
+  name      String
+  adminId   Int
+  admin     User     @relation("AdminCategories", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  users   UserCategory[]
+  folders FolderAccess[]
+
+  // Composite index for admin-scoped queries
+  @@unique([name, adminId])
+  @@index([adminId])
+}
+
+// ============================================
+// FOLDERS - with Cascade Delete
+// ============================================
+
+model Folder {
+  id          Int      @id @default(autoincrement())
+  name        String
+  sizeInBytes Int      @default(0)
+  adminId     Int
+  admin       User     @relation("AdminFolders", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  isDeleted   Boolean  @default(false) // Soft delete
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations with Cascade Delete
+  documents Document[]     @relation("FolderDocuments")
+  accesses  FolderAccess[] @relation("FolderAccesses")
+  auditLogs AuditLog[]
+
+  // Composite index for admin-scoped + soft-delete queries
+  @@index([adminId, isDeleted])
+  @@index([isDeleted])
+}
+
+// ============================================
+// FOLDER ACCESS (Many-to-Many: Folders <-> Categories)
+// ============================================
+
+model FolderAccess {
+  id         Int      @id @default(autoincrement())
+  folderId   Int
+  folder     Folder   @relation("FolderAccesses", fields: [folderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  categoryId Int
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([folderId, categoryId])
+  @@index([folderId])
+  @@index([categoryId])
+}
+
+// ============================================
+// USER ACCESS TO CATEGORIES (Explicit Many-to-Many)
+// ============================================
+
+model UserCategory {
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  categoryId Int
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([userId, categoryId])
+  @@index([userId])
+  @@index([categoryId])
+}
+
+// ============================================
+// DOCUMENTS/SECTIONS (Sliced PDF parts) - Cascade Delete
+// ============================================
+
+model Document {
+  id               Int      @id @default(autoincrement())
+  name             String
+  path             String   // Public-accessible path e.g. /uploads/FolderName/file.pdf
+  sizeInBytes      Int      @default(0) // Exact byte count of the generated PDF buffer
+  originalSource   String?  // Optional: name of the original PDF this section was sliced from
+  folderId         Int
+  folder           Folder   @relation("FolderDocuments", fields: [folderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  isDeleted        Boolean  @default(false) // Soft delete
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  auditLogs AuditLog[]
+
+  // Performance indexes
+  @@index([folderId, isDeleted])
+  @@index([isDeleted])
+}
+
+// ============================================
+// AUDIT LOG (Track who uploaded what and when)
+// Intentionally uses NoAction — logs must NEVER be cascade-deleted
+// ============================================
+
+model AuditLog {
+  id         Int       @id @default(autoincrement())
+  action     String    // "UPLOAD", "CREATE", "DELETE", "UPDATE", "LOGIN", "BLOCK"
+  details    String?   // Additional details about the action
+  userId     Int
+  user       User      @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  folderId   Int?      // Optional - if action relates to a folder
+  folder     Folder?   @relation(fields: [folderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  documentId Int?      // Optional - if action relates to a document
+  document   Document? @relation(fields: [documentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdAt  DateTime  @default(now())
+
+  // Index for audit log queries by user and time
+  @@index([userId])
+  @@index([createdAt])
+}
