@@ -1,0 +1,1016 @@
+================================================================================
+                    DOCUMENT MANAGEMENT SYSTEM (DMS)
+                         COMPREHENSIVE PROJECT ANALYSIS
+                              May 9, 2026
+================================================================================
+
+PROJECT NAME: Document Management System (one-project)
+VERSION: 0.1.0
+PURPOSE: Enterprise-grade document management with role-based access control,
+         PDF processing, admin hierarchy, and audit logging.
+
+================================================================================
+1. TECHNOLOGY STACK
+================================================================================
+
+FRONTEND FRAMEWORK:
+  • Next.js 16.2.4 (App Router - modern React server components)
+  • React 19.2.4 (UI component library)
+  • React DOM 19.2.4 (DOM rendering)
+  • TypeScript 5 (Type-safe development)
+
+STYLING & UI:
+  • Tailwind CSS 4 (Utility-first CSS framework)
+  • @tailwindcss/postcss (PostCSS plugin for Tailwind)
+  • Tailwind Merge 3.5.0 (Merge Tailwind class utilities)
+  • Class Variance Authority 0.7.1 (Component class builder)
+  • Lucide React 1.14.0 (Icon library with 1000+ SVG icons)
+  • Radix UI (Accessible component primitives):
+    - react-avatar, react-dialog, react-dropdown-menu, react-label
+    - react-scroll-area, react-select, react-separator, react-toast
+
+NOTIFICATIONS & UI FEEDBACK:
+  • Sonner 2.0.7 (Toast notifications library)
+  • Recharts 3.8.1 (React charting library for analytics)
+
+DATABASE & ORM:
+  • Prisma 6.19.3 (ORM with SQL Server support)
+  • @prisma/client 6.19.3 (Prisma client)
+  • Microsoft SQL Server (Database backend via DATABASE_URL env var)
+
+PDF PROCESSING:
+  • pdfjs-dist 5.7.284 (PDF parsing and rendering - client-side)
+  • pdf-lib 1.17.1 (PDF manipulation - page extraction/splitting)
+
+SECURITY & AUTHENTICATION:
+  • Jose 6.2.3 (JWT token creation and verification)
+  • Bcrypt 6.0.0 (Password hashing and comparison)
+  • Next.js Cookies (Secure HTTP-only cookie management)
+
+CLIENT-SIDE STORAGE:
+  • localforage 1.10.0 (IndexedDB abstraction for session persistence)
+
+DEVELOPMENT TOOLS:
+  • TSX 4.21.0 (TypeScript executor for scripts)
+  • ESLint 9 (Code linting)
+  • eslint-config-next (Next.js ESLint configuration)
+
+================================================================================
+2. ARCHITECTURE OVERVIEW
+================================================================================
+
+DEPLOYMENT MODEL:
+  • Server-Side Rendering (SSR) with Next.js App Router
+  • Client-Side Components ("use client" where interactive)
+  • API Routes as serverless functions (/api/*)
+  • Static file serving (/public/uploads/*)
+
+AUTHENTICATION FLOW:
+  ┌─────────────────────────────────────────────────────────────┐
+  │ 1. User submits credentials (userId + password)             │
+  │ 2. /api/auth/login validates against Prisma database       │
+  │ 3. Password verified with bcrypt.compare()                 │
+  │ 4. JWT token created with Jose library                     │
+  │ 5. Token stored in httpOnly cookie (7-day expiry)          │
+  │ 6. Session verified on each request via /api/auth/me       │
+  │ 7. AuthGuard component checks localStorage for session     │
+  └─────────────────────────────────────────────────────────────┘
+
+SESSION MANAGEMENT:
+  • Token-based authentication (JWT with HMAC-SHA256)
+  • Cookie-based session persistence (httpOnly, secure, sameSite: lax)
+  • LastActivityTimestamp tracked in localStorage for UX
+  • 7-day token expiration
+  • Cascading access check for blocked/deleted users
+
+PDF PROCESSING WORKFLOW:
+  ┌─────────────────────────────────────────────────────────────┐
+  │ 1. User selects PDF file or scanner triggers upload        │
+  │ 2. processPdfFile() function invoked                        │
+  │ 3. pdfjs-dist renders all pages as PNG thumbnails          │
+  │ 4. Page data URLs stored in React state + IndexedDB        │
+  │ 5. User selects pages → section name → clicks "Save"       │
+  │ 6. FormData sent to /api/admin/upload                      │
+  │ 7. pdf-lib extracts selected pages → new PDF               │
+  │ 8. File written to /public/uploads/{folderName}/           │
+  │ 9. Document record created in Prisma                       │
+  │ 10. Audit log entry recorded                               │
+  │ 11. Session stored in IndexedDB for persistence            │
+  └─────────────────────────────────────────────────────────────┘
+
+SCANNER BRIDGE INTEGRATION:
+  • Port: 4785 (configurable via NEXT_PUBLIC_SCANNER_BRIDGE_URL env var)
+  • Default URL: http://localhost:4785
+  • Request: POST {BRIDGE_URL}/scan with JSON payload
+  • Response: { success: true, fileData: "base64_string", extension: "pdf" }
+  • Conversion: Base64 → Blob → File → same PDF workflow
+  • Naming: scanned-{ISO-timestamp}.pdf
+  • Helper location: lib/scanner.ts with scanDocument(), getScannerStatus()
+  • Timeout: 60 seconds (10-30 second hardware scanning window)
+  • AbortController: Proper cancellation for timeouts
+
+DATA PERSISTENCE:
+  • SQL Server via Prisma
+  • Session storage via IndexedDB (via localforage)
+  • Physical files in /public/uploads/{folderName}/
+  • Soft deletes with isDeleted flag (preserves audit history)
+
+================================================================================
+3. DATABASE SCHEMA
+================================================================================
+
+MODELS & RELATIONSHIPS:
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ User                                                               │
+├─────────────────────────────────────────────────────────────────────┤
+│ id (INT, PK, autoincrement)                                         │
+│ name (STRING)                                                       │
+│ userId (STRING, UNIQUE) - unique identifier (username-like)        │
+│ password (STRING) - bcrypt hashed                                  │
+│ role (STRING, default: "USER") - SUPERADMIN | ADMIN | USER        │
+│ parentAdminId (INT, FK) - hierarchy: links users to creating admin │
+│ isBlocked (BOOLEAN, default: false) - blocks user access          │
+│ isDeleted (BOOLEAN, default: false) - soft delete                 │
+│ createdAt (DATETIME, default: now)                                │
+│ updatedAt (DATETIME, auto-updated)                                │
+├─────────────────────────────────────────────────────────────────────┤
+│ Relations:                                                          │
+│  • parentAdmin: User (self-referential, NO ACTION delete)          │
+│  • createdUsers: User[] (users created by this admin)              │
+│  • managedCategories: Category[] (categories created by admin)     │
+│  • userCategories: UserCategory[] (explicit access mapping)        │
+│  • folders: Folder[] (folders owned by this admin)                │
+│  • auditLogs: AuditLog[] (actions performed by this user)         │
+├─────────────────────────────────────────────────────────────────────┤
+│ Indexes: [isDeleted], [parentAdminId], [role, isDeleted]          │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ Category (Teams: FI team, Soft team, etc.)                        │
+├─────────────────────────────────────────────────────────────────────┤
+│ id (INT, PK, autoincrement)                                         │
+│ name (STRING)                                                       │
+│ adminId (INT, FK → User) - admin who created this category        │
+│ createdAt (DATETIME)                                               │
+│ updatedAt (DATETIME)                                               │
+├─────────────────────────────────────────────────────────────────────┤
+│ Relations:                                                          │
+│  • admin: User (NO ACTION delete - protected)                      │
+│  • users: UserCategory[] (users in this category)                  │
+│  • folders: FolderAccess[] (folders accessible to this category)  │
+├─────────────────────────────────────────────────────────────────────┤
+│ Indexes: [adminId]                                                 │
+│ Constraints: UNIQUE([name, adminId]) - category names per admin   │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ Folder                                                             │
+├─────────────────────────────────────────────────────────────────────┤
+│ id (INT, PK, autoincrement)                                         │
+│ name (STRING)                                                       │
+│ sizeInBytes (INT, default: 0) - running total of document sizes   │
+│ adminId (INT, FK → User) - admin who owns this folder             │
+│ isDeleted (BOOLEAN, default: false) - soft delete                 │
+│ createdAt (DATETIME)                                               │
+│ updatedAt (DATETIME)                                               │
+├─────────────────────────────────────────────────────────────────────┤
+│ Relations:                                                          │
+│  • admin: User (NO ACTION delete - protected)                      │
+│  • documents: Document[] (CASCADE delete - PDFs in this folder)   │
+│  • accesses: FolderAccess[] (CASCADE delete - category permissions)│
+│  • auditLogs: AuditLog[]                                          │
+├─────────────────────────────────────────────────────────────────────┤
+│ Indexes: [adminId, isDeleted], [isDeleted]                        │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ FolderAccess (Many-to-Many: Folders ↔ Categories)                │
+├─────────────────────────────────────────────────────────────────────┤
+│ id (INT, PK)                                                        │
+│ folderId (INT, FK → Folder) - CASCADE delete                       │
+│ categoryId (INT, FK → Category) - NO ACTION delete                 │
+├─────────────────────────────────────────────────────────────────────┤
+│ Constraints: UNIQUE([folderId, categoryId])                        │
+│ Indexes: [folderId], [categoryId]                                  │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ UserCategory (Many-to-Many: Users ↔ Categories)                  │
+├─────────────────────────────────────────────────────────────────────┤
+│ userId (INT, FK → User) - CASCADE delete                           │
+│ categoryId (INT, FK → Category) - NO ACTION delete                 │
+├─────────────────────────────────────────────────────────────────────┤
+│ PK: ([userId, categoryId])                                         │
+│ Indexes: [userId], [categoryId]                                    │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ Document (Sliced PDF sections)                                    │
+├─────────────────────────────────────────────────────────────────────┤
+│ id (INT, PK, autoincrement)                                         │
+│ name (STRING) - section name (e.g., "Section 1", "Part A")        │
+│ path (STRING) - public-accessible path (e.g., /uploads/Folder/...) │
+│ sizeInBytes (INT, default: 0) - exact byte count of generated PDF  │
+│ originalSource (STRING, nullable) - name of original PDF           │
+│ folderId (INT, FK → Folder) - CASCADE delete                       │
+│ isDeleted (BOOLEAN, default: false) - soft delete                 │
+│ createdAt (DATETIME)                                               │
+│ updatedAt (DATETIME)                                               │
+├─────────────────────────────────────────────────────────────────────┤
+│ Relations:                                                          │
+│  • folder: Folder (CASCADE delete)                                │
+│  • auditLogs: AuditLog[]                                          │
+├─────────────────────────────────────────────────────────────────────┤
+│ Indexes: [folderId, isDeleted], [isDeleted]                       │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ AuditLog (Immutable audit trail)                                  │
+├─────────────────────────────────────────────────────────────────────┤
+│ id (INT, PK, autoincrement)                                         │
+│ action (STRING) - UPLOAD, CREATE, DELETE, UPDATE, LOGIN, BLOCK   │
+│ details (STRING, nullable) - additional context                    │
+│ userId (INT, FK → User) - NO ACTION delete (preserve history)      │
+│ folderId (INT, FK, nullable → Folder)                              │
+│ documentId (INT, FK, nullable → Document)                          │
+│ createdAt (DATETIME, auto)                                         │
+├─────────────────────────────────────────────────────────────────────┤
+│ Purpose: Immutable record of all system actions for compliance    │
+│ NO CASCADE DELETE: Records must persist even if user/folder deleted │
+└─────────────────────────────────────────────────────────────────────┘
+
+SOFT DELETE STRATEGY:
+  • User.isDeleted, Folder.isDeleted, Document.isDeleted
+  • Preserves audit logs and referential integrity
+  • Queries filter by "isDeleted: false" by default
+  • Superadmin can view/restore soft-deleted records
+
+USER ROLE HIERARCHY:
+  SUPERADMIN → Can create/manage all ADMINs, view system stats
+  ADMIN      → Can create/manage USERs, manage folders/documents/categories
+  USER       → Can view documents within assigned categories
+
+================================================================================
+4. API ENDPOINTS
+================================================================================
+
+AUTHENTICATION ENDPOINTS:
+──────────────────────────
+  POST /api/auth/login
+    Params: { userId, password }
+    Response: { success, user: {id, name, userId, role} }
+    Logic: Verify credentials → create JWT → set httpOnly cookie
+    Special: Auto-creates superadmin on first login (hardcoded fallback)
+
+  POST /api/auth/logout
+    Response: { success: true }
+    Logic: Clear auth-token cookie, remove session
+
+  GET /api/auth/me
+    Response: { user: JWTPayload }
+    Logic: Verify JWT from cookie, return current user info
+    Permissions: All authenticated users
+
+ADMIN ENDPOINTS:
+────────────────
+  GET /api/admin/folders
+    Response: Array of { id, name, totalSize, accesses[], documents[] }
+    Logic: List admin's own folders (non-deleted), recalculate storage
+    Permissions: ADMIN only
+
+  POST /api/admin/folders
+    Params: { name, categoryIds[] }
+    Response: { success, folder }
+    Logic: Create folder with optional category access
+    Permissions: ADMIN only
+    Audit: Creates AuditLog("CREATE", ...)
+
+  PUT /api/admin/folders/{id}/access
+    Params: { categoryIds[] }
+    Response: { success, folder }
+    Logic: Update folder's category access list
+    Permissions: ADMIN only
+
+  GET /api/admin/folders/{id}/documents
+    Response: Array of documents in folder
+    Logic: Fetch documents filtered by folder, exclude soft-deleted
+    Permissions: ADMIN only
+
+  POST /api/admin/upload
+    Params: FormData { file, folderId, sectionName, pages[] }
+    Response: { success, document }
+    Logic:
+      1. Verify admin owns folder
+      2. Use pdf-lib to extract selected pages
+      3. Save new PDF to /public/uploads/{folderName}/
+      4. Create Document record in DB
+      5. Update Folder.sizeInBytes
+      6. Create AuditLog("UPLOAD", ...)
+    Permissions: ADMIN only
+
+  GET /api/admin/categories
+    Response: Array of categories created by this admin
+    Logic: Fetch admin's categories
+    Permissions: ADMIN only
+
+  POST /api/admin/categories
+    Params: { name }
+    Response: { success, category }
+    Logic: Create new category for admin
+    Permissions: ADMIN only
+    Audit: Creates AuditLog
+
+  GET /api/admin/users
+    Response: Array of users created by this admin
+    Logic: List all users (including soft-deleted if parameter passed)
+    Permissions: ADMIN only
+
+  POST /api/admin/users
+    Params: { userId, password, name }
+    Response: { success, user }
+    Logic: Create user under this admin (parentAdminId relationship)
+    Permissions: ADMIN only
+
+SUPERADMIN ENDPOINTS:
+─────────────────────
+  GET /api/superadmin/admins
+    Response: Array of { id, name, totalStorage, userCount, folderCount, isBlocked }
+    Logic: List all admins (non-deleted), recalculate storage from live docs
+    Permissions: SUPERADMIN only
+
+  POST /api/superadmin/admins/create
+    Params: { userId, password, name }
+    Response: { success, admin }
+    Logic: Create new ADMIN user
+    Permissions: SUPERADMIN only
+    Audit: Creates AuditLog
+
+  PUT /api/superadmin/admins/{id}/block
+    Params: { blocked: boolean }
+    Response: { success }
+    Logic: Set User.isBlocked flag (cascades to deny login)
+    Permissions: SUPERADMIN only
+
+USER ENDPOINTS:
+───────────────
+  GET /api/user/folders
+    Response: Array of folders accessible to user via categories
+    Logic:
+      1. Fetch user's categories via UserCategory
+      2. Fetch folders accessible via FolderAccess
+      3. Include documents (non-deleted only)
+    Permissions: USER only
+
+  GET /api/upload (legacy endpoint)
+    Response: Likely similar to /api/user/folders
+
+SCANNER BRIDGE INTEGRATION:
+────────────────────────────
+  POST {NEXT_PUBLIC_SCANNER_BRIDGE_URL}/scan (EXTERNAL SERVICE)
+    Default: http://localhost:4785/scan
+    Config: Set NEXT_PUBLIC_SCANNER_BRIDGE_URL env var for custom URL
+    Params: { scannerId?, resolution?, colorMode? } (all optional)
+    Response: { success: true, fileData: "base64", extension: "pdf", fileName?, scannedAt? }
+    Logic:
+      1. Triggered by "Scan Now" button
+      2. scanDocument() called from lib/scanner.ts helper
+      3. 60-second timeout with AbortController
+      4. Detailed error handling for offline, timeout, invalid response
+      5. Base64 converted to File via convertScanResponseToFile()
+      6. File enters same processPdfFile() workflow
+      7. Toast messages: loading → scanning → success/error
+
+================================================================================
+5. KEY FEATURES & WORKFLOWS
+================================================================================
+
+FEATURE 1: DOCUMENT UPLOAD & PDF SLICING
+─────────────────────────────────────────
+Purpose: Admins upload multi-page PDFs, select pages, save as named sections
+
+Flow:
+  1. Drag & drop or click to select PDF file
+  2. processPdfFile() renders all pages as PNG thumbnails
+  3. Pages displayed in grid, user clicks to select
+  4. Enter section name + click "Save Section"
+  5. FormData sent to /api/admin/upload
+  6. pdf-lib extracts selected pages → new PDF created
+  7. File saved to /public/uploads/{folderName}/{sectionName}_{timestamp}.pdf
+  8. Document record created + AuditLog recorded
+
+UI Components:
+  • PDF upload input (file type "application/pdf")
+  • Page thumbnail grid (clickable, selectable, searchable)
+  • Section name input field
+  • Save Section button (disabled if no pages selected)
+  • Clear upload button (resets state + IndexedDB session)
+
+Session Persistence:
+  • Pages stored in IndexedDB via localforage
+  • Restored on page reload/navigation
+  • Auto-cleared when user completes upload or logs out
+
+FEATURE 2: FOLDER MANAGEMENT & CATEGORY ACCESS
+────────────────────────────────────────────────
+Purpose: Admins organize documents into folders, control access via categories
+
+Flow:
+  1. Admin clicks "Add Folder"
+  2. Enters folder name + multi-selects categories
+  3. POST /api/admin/folders creates folder + FolderAccess records
+  4. Users in selected categories can view documents in folder
+  5. Admin can edit folder access anytime (PUT /api/admin/folders/{id}/access)
+
+UI Components:
+  • Create Folder modal (name input + category multi-select)
+  • Folder grid (displays size, category tags, "Edit Access" button)
+  • Edit Access modal (update category permissions)
+
+Data Relationships:
+  Folder → FolderAccess → Category → UserCategory → User
+  (Folder accessible to all users in any of its categories)
+
+FEATURE 3: SCANNER BRIDGE INTEGRATION
+───────────────────────────────────────
+Purpose: Scan documents directly into DMS from desktop scanner via bridge service
+
+Configuration:
+  • Environment Variable: NEXT_PUBLIC_SCANNER_BRIDGE_URL
+  • Default Value: http://localhost:4785
+  • Location: Set in .env.local or hosting platform secrets
+  • Example: NEXT_PUBLIC_SCANNER_BRIDGE_URL="http://scanner-server:4785"
+
+Flow:
+  1. User clicks "Scan Now" button
+  2. handleScanNow() calls scanDocument() from lib/scanner.ts
+  3. Toast shows: "Connecting to scanner bridge..."
+  4. POST request sent to {NEXT_PUBLIC_SCANNER_BRIDGE_URL}/scan
+  5. AbortController timeout: 60 seconds (allows 10-30 sec hardware scan)
+  6. Toast updates: "Waiting for scanner... (place document in scanner)"
+  7. Bridge service triggers scanner hardware, converts image to PDF
+  8. Bridge returns JSON: { success: true, fileData: "base64", extension: "pdf" }
+  9. convertScanResponseToFile() decodes Base64 → Blob → File object
+  10. processPdfFile() invoked (same as manual upload workflow)
+  11. User sees page thumbnails, selects pages, saves section
+  12. Toast shows: "Scan completed! Processing document..."
+
+Error Handling (lib/scanner.ts provides detailed error messages):
+  • OFFLINE: "Scanner bridge offline - ensure the desktop app is running on port 4785"
+  • TIMEOUT: "Scan timeout - is paper in the scanner? Make sure you loaded the document."
+  • NO_SCANNER: "No scanner detected - connect a scanner to your computer"
+  • INVALID_RESPONSE: "Scanner bridge returned invalid response"
+  • CONVERSION_ERROR: "Failed to process scanned document"
+  • isScanning state prevents button spam during 10-30 second scan window
+  • Console logging: [Scanner] debug output for troubleshooting
+
+Helper Functions (lib/scanner.ts):
+  • scanDocument(options?): Main scan trigger, handles timeout & errors
+  • convertScanResponseToFile(scanResponse): Base64 → File conversion
+  • getScannerStatus(): Check bridge online + available scanners
+  • getScanners(): Get list of available scanner devices
+  • getScannerErrorMessage(error): User-friendly error messages
+  • ScannerError class: Custom error type with code + details
+
+FEATURE 4: USER MANAGEMENT & ADMIN HIERARCHY
+──────────────────────────────────────────────
+Purpose: Superadmin creates ADMINs, ADMINs create USERs, hierarchical control
+
+Structure:
+  SUPERADMIN
+    → ADMIN (created by superadmin, parentAdminId = null)
+       → USER (created by admin, parentAdminId = admin.id)
+
+Flow (Admin Creates User):
+  1. Admin navigates to Manage Users page
+  2. Enters userId, password, name
+  3. POST /api/admin/users
+  4. User record created with role: "USER", parentAdminId: admin.id
+  5. AuditLog recorded
+
+Permissions:
+  • SUPERADMIN: Can view/create/block all ADMINs
+  • ADMIN: Can view/create/manage only USERs under them
+  • USER: Can only view documents in their categories
+
+Blocking:
+  • SUPERADMIN can block any ADMIN via PUT /api/superadmin/admins/{id}/block
+  • Blocked users cannot login (checked in /api/auth/login)
+  • isBlocked flag persists; can be unblocked
+
+FEATURE 5: AUDIT LOGGING & COMPLIANCE
+──────────────────────────────────────
+Purpose: Immutable record of all system actions for compliance/investigation
+
+Actions Logged:
+  • LOGIN - user authenticated successfully
+  • UPLOAD - PDF section created (pages extracted)
+  • CREATE - folder/category/admin created
+  • DELETE - user soft-deleted (via flag)
+  • UPDATE - access permissions changed
+  • BLOCK - admin blocked by superadmin
+
+AuditLog Fields:
+  • action: String (enum-like)
+  • details: Optional context (e.g., "Created section 'Part A' with 5 pages")
+  • userId: Who performed action
+  • folderId: Optional context (which folder affected)
+  • documentId: Optional context (which document affected)
+  • createdAt: Timestamp
+
+Preservation:
+  • NO CASCADE DELETE: Logs preserved even if user/folder deleted
+  • Soft deletes preserve history (isDeleted flag doesn't delete records)
+  • Useful for investigating who accessed/modified what
+
+FEATURE 6: ROLE-BASED ACCESS CONTROL (RBAC)
+─────────────────────────────────────────────
+Flow at Login:
+  1. User submits credentials
+  2. /api/auth/login verifies password
+  3. checkUserAccess() called to verify:
+     a. User not isBlocked
+     b. User not isDeleted
+     c. If USER: parentAdmin not blocked/deleted
+  4. If access denied: return 403 "Access denied" error
+  5. If allowed: create JWT + set cookie
+
+At API Request:
+  1. AuthGuard component verifies session exists
+  2. Each route checks session.role matches required role
+  3. ADMIN routes reject if session.role !== 'ADMIN'
+  4. SUPERADMIN routes reject if session.role !== 'SUPERADMIN'
+
+Folder Access:
+  1. User assigned to Category via UserCategory
+  2. Category accessible to Folder via FolderAccess
+  3. /api/user/folders returns only folders user can access via this path
+
+FEATURE 7: PDF PAGE RENDERING & THUMBNAILS
+────────────────────────────────────────────
+Technology: pdfjs-dist 5.7.284
+
+Process:
+  1. PDF file loaded as ArrayBuffer
+  2. pdfjs.getDocument().promise called
+  3. For each page (1 to numPages):
+     a. getPage(i) fetches page object
+     b. getViewport({ scale: 2 }) creates rendering context
+     c. Canvas created with DPR scaling (device pixel ratio)
+     d. page.render({ canvasContext, viewport }) renders to canvas
+     e. canvas.toDataURL('image/png') creates thumbnail data URL
+  4. Data URLs stored in state + IndexedDB for persistence
+  5. Thumbnails displayed in clickable grid
+
+Features:
+  • Multi-page support (tested up to 100+ pages)
+  • Search by page number (filter for "5, 12, ...")
+  • Select/Deselect individual pages or all
+  • Preview with zoom: Click thumbnail to enlarge (2.5x zoom with mouse pan)
+  • Disable thumbnails until all pages rendered
+
+FEATURE 8: STORAGE CALCULATION & REAL-TIME UPDATES
+───────────────────────────────────────────────────
+Calculation Method:
+  • Document.sizeInBytes: Exact bytes of generated PDF from pdf-lib
+  • Folder.sizeInBytes: Running total (updated on each upload)
+  • Real-time recalc: Exclude soft-deleted documents (isDeleted: false)
+
+API Response Logic:
+  1. Fetch folder + all non-deleted documents
+  2. Sum all document.sizeInBytes
+  3. Return calculated totalSize (not just folder.sizeInBytes)
+  4. This ensures accuracy even after soft deletes
+
+Display:
+  • formatBytes(bytes) function formats to B, KB, MB, GB, TB
+  • Shows in folder card, admin stats, etc.
+
+FEATURE 9: SESSION PERSISTENCE & RESTORATION
+──────────────────────────────────────────────
+IndexedDB Storage:
+  • Database: "one_project_pdf_sessions"
+  • Store: "pdf_upload_sessions"
+  • Key: "pdf_upload_session_{folderId}"
+
+Stored Data:
+  { folderId, fileName, sectionName, selectedPages[], pages[], file }
+
+Restoration Logic:
+  1. User opens folder → loadPdfSession(folder.id) called
+  2. If session exists + has pages: restore state
+  3. Toast shows "Restored X pages from previous session"
+  4. User can continue from where they left off
+  5. Deletion: clearPdfSession(folder.id) on success or user request
+
+Benefits:
+  • Users don't lose work on accidental navigation
+  • Multiple tabs/windows don't conflict (per-folder isolation)
+  • Persistence survives browser restart (IndexedDB backed by disk)
+
+FEATURE 10: DOCUMENT VIEWING & DOWNLOAD
+─────────────────────────────────────────
+Display:
+  • Document card: Name, size, creation date
+  • Two action buttons: View (target="_blank"), Download (download attribute)
+
+Linking:
+  • href={doc.path} points to /uploads/{folderName}/{fileName}.pdf
+  • Static file served by Next.js /public/* router
+  • View: Opens PDF in browser (inline)
+  • Download: Triggers save dialog with original name
+
+Security:
+  • Access controlled at API level (users see only accessible folders)
+  • File access also restricted by folder ownership/category
+
+================================================================================
+6. PAGES & COMPONENTS
+================================================================================
+
+PAGES (in /app/):
+──────────────────
+
+/app/page.tsx (Landing / Home)
+  • Root page, likely redirects to /login or /admin based on role
+
+/app/login/page.tsx (Login)
+  • Input fields: userId, password
+  • POST /api/auth/login on submit
+  • Redirects to /admin or /user on success
+  • Shows errors via Sonner toast
+
+/app/admin/page.tsx (Admin Dashboard)
+  • Protected by AuthGuard + role check
+  • Shows overview: folder count, document count, storage used
+  • Quick access to Documents, Manage Users, Categories
+
+/app/admin/documents/page.tsx (Document Management - Main Feature)
+  • Complex component with FolderDetail subcomponent
+  • Two views:
+    a) Folder list: Grid of folders, search, create folder modal
+    b) Folder detail: PDF upload + scanner, page thumbnails, saved sections
+  • FolderDetail handles:
+    - PDF upload via file input or drag-drop
+    - Page thumbnail rendering + selection
+    - Scanner bridge integration ("Scan Now" button)
+    - Save section workflow
+    - Display of saved documents in folder
+
+/app/admin/manage-users/page.tsx (User Management)
+  • List users created by this admin
+  • Create user form: userId, password, name
+  • Search/filter users
+  • Maybe delete option (soft delete)
+
+/app/superadmin/page.tsx (SuperAdmin Dashboard)
+  • View all admins with storage, user count, folder count
+  • Block/unblock admins
+  • Quick stats: total storage, admin count
+
+/app/superadmin/create-admin/page.tsx (Admin Creation)
+  • Form: userId, password, name
+  • POST /api/superadmin/admins/create
+  • Lists created admins with block/unblock actions
+
+/app/user/page.tsx (User Dashboard)
+  • View accessible folders (filtered by user's categories)
+  • View accessible documents
+  • Read-only (no upload/create)
+
+/app/upload/page.tsx (Legacy Upload Page)
+  • Possibly duplicate of /admin/documents
+  • Or alternate flow for different user type
+
+/app/unauthorized/page.tsx (Access Denied)
+  • Shown when user lacks role/permission for requested resource
+
+COMPONENTS (in /app/components/):
+──────────────────────────────────
+
+AuthGuard.tsx
+  • Wrapper for all protected pages
+  • On mount: verifies session via /api/auth/me
+  • If invalid: redirects to /login
+  • Shows loading spinner while verifying
+  • localStorage.getItem('lastActivityTimestamp') check
+  • localStorage.getItem('session_expired') for graceful redirect
+
+SessionGuard.tsx
+  • Likely manages session timeout/activity tracking
+  • Updates lastActivityTimestamp on user interaction
+  • Maybe clears it on logout
+
+MODALS (inline in DocumentsPage):
+──────────────────────────────────
+  • Create Folder Modal: Input folder name + category multi-select
+  • Edit Access Modal: Update category permissions for folder
+  • PDF Preview Modal: Full-screen view with zoom (2.5x on hover)
+
+================================================================================
+7. SECURITY IMPLEMENTATION
+================================================================================
+
+PASSWORD SECURITY:
+  • Bcrypt hashing: rounds = 10 (default)
+  • Stored in database, never transmitted plaintext
+  • Comparison: bcrypt.compare(inputPassword, hashedPassword)
+  • Every login goes through this verification
+
+JWT TOKENS:
+  • Algorithm: HMAC-SHA256 (HS256)
+  • Secret: process.env.JWT_SECRET (must be set in production)
+  • Payload: { userId, userIdString, role, name, parentAdminId }
+  • Expiration: 7 days
+  • Issued at: claim set on creation
+  • Verification: jwtVerify() checks signature + expiration
+
+HTTP-ONLY COOKIES:
+  • Cookie name: "auth-token"
+  • Secure: true (only over HTTPS in production)
+  • SameSite: lax (CSRF protection)
+  • HttpOnly: true (not accessible to JavaScript, prevents XSS theft)
+  • Path: / (available site-wide)
+  • MaxAge: 604800 seconds (7 days)
+  • Set on login: setSession(user)
+  • Cleared on logout: removeSession()
+
+ROLE-BASED ACCESS CONTROL:
+  • Each API route checks session.role
+  • /api/admin/* rejects if role !== 'ADMIN'
+  • /api/superadmin/* rejects if role !== 'SUPERADMIN'
+  • /api/user/* rejects if role !== 'USER'
+  • AuthGuard protects all sensitive pages client-side
+
+DATA ACCESS CONTROL:
+  • Admins can only access own folders (adminId = session.userId)
+  • Users can only access folders in their categories
+  • Folder permissions checked via FolderAccess + UserCategory join
+
+CASCADING PERMISSION CHECKS:
+  • Superadmin can block ADMIN → blocks all USERs under that admin
+  • When user tries to login: checkUserAccess() verifies:
+    1. user.isBlocked === false
+    2. user.isDeleted === false
+    3. If user created by admin: parentAdmin.isBlocked === false
+
+FILE ACCESS:
+  • PDFs stored in /public/uploads/{folderName}/ (static)
+  • Access controlled at API level (users don't see unauthorized folders)
+  • Filename includes timestamp to prevent guessing
+
+AUDIT LOGGING:
+  • All sensitive actions logged: UPLOAD, CREATE, DELETE, LOGIN, BLOCK
+  • AuditLog.userId records who performed action
+  • Immutable (NO CASCADE DELETE on user removal)
+  • Useful for forensics/compliance
+
+SOFT DELETES:
+  • isDeleted flag preserves records instead of hard-deleting
+  • Maintains referential integrity for audit logs
+  • Queries filter by "isDeleted: false" by default
+  • Superadmin can potentially restore deleted users/folders
+
+INPUT VALIDATION:
+  • Server-side: Check required fields, validate types, sanitize
+  • Example: Folder name must be string + non-empty
+  • Example: Category IDs must be array of integers
+  • File type check: Only PDFs accepted (application/pdf)
+
+================================================================================
+8. CONFIGURATION & ENVIRONMENT
+================================================================================
+
+ENVIRONMENT VARIABLES (required):
+──────────────────────────────────
+  DATABASE_URL
+    • Connection string to SQL Server
+    • Format: sqlserver://user:password@host:port?database=dbname
+    • Used by Prisma for database connection
+
+  JWT_SECRET
+    • Secret key for signing JWT tokens
+    • Should be strong, random, 32+ characters
+    • Fallback: 'your-super-secret-key-change-in-production' (UNSAFE)
+
+  NODE_ENV
+    • "development" or "production"
+    • Affects cookie security, logging, optimizations
+
+BUILD & RUNTIME SCRIPTS:
+─────────────────────────
+  npm run dev
+    • Start Next.js dev server on http://localhost:3000
+    • Hot-reload on file changes
+    • Source maps for debugging
+
+  npm run build
+    • Compile TypeScript → JavaScript
+    • Optimize React components
+    • Bundle client & server code
+
+  npm start
+    • Run production server (requires npm run build first)
+
+  npm run lint
+    • Run ESLint to check code quality
+
+  npm run db:push
+    • Apply Prisma schema changes to database (dev/test only)
+    • WARNING: Modifies database structure
+
+  npm run db:seed
+    • Run prisma/seed.ts to populate initial data
+    • Useful for testing, development
+
+================================================================================
+9. DEPLOYMENT ARCHITECTURE
+================================================================================
+
+SERVERLESS DEPLOYMENT (Vercel, etc.):
+  • Next.js App Router optimized for serverless
+  • API routes become individual functions
+  • /api/* routes auto-scaled, cold-started as needed
+  • Build output: .next/ folder (static + server functions)
+  • Static assets: /public/* served via CDN
+
+DATABASE:
+  • SQL Server hosted separately (Azure SQL, AWS RDS, self-managed)
+  • Prisma connects to DATABASE_URL on each request
+  • Connection pooling recommended for serverless (Prisma Data Proxy)
+
+STATIC FILES:
+  • /public/uploads/* served directly by Next.js
+  • Or move to S3/CDN for production scale
+  • Filename includes timestamp for cache-busting
+
+ENVIRONMENT:
+  • Set DATABASE_URL + JWT_SECRET in hosting platform secrets
+  • Ensure HTTPS enabled (for secure cookies)
+  • Node.js 18+ required (Next.js 16 requirement)
+
+MONITORING:
+  • Application logs: Check hosting platform logs
+  • Database logs: SQL Server query logs
+  • Audit logs: Query AuditLog table for system actions
+  • Error tracking: Integrate Sentry, DataDog, etc. (not currently in project)
+
+================================================================================
+10. KNOWN DEPENDENCIES & EXTERNAL SERVICES
+================================================================================
+
+REQUIRED:
+  • Microsoft SQL Server (or SQL Server on Linux)
+    - Set via DATABASE_URL environment variable
+    - Prisma handles all queries
+
+OPTIONAL:
+  • Scanner Bridge Service (Electron app)
+    - Runs on http://localhost:4785 by default
+    - Configurable via NEXT_PUBLIC_SCANNER_BRIDGE_URL env var
+    - Triggers physical scanner hardware
+    - Returns scanned PDF as Base64 in JSON response
+    - If not running: Detailed error message shown to user
+    - Not required for basic DMS functionality (upload still works)
+    - Endpoints: /scan (POST), /status (GET), /scanners (GET)
+
+DEVELOPMENT:
+  • npm/yarn for package management
+  • TypeScript compiler (tsx) for scripts
+  • Prisma CLI for database migrations
+
+================================================================================
+11. PERFORMANCE CONSIDERATIONS
+================================================================================
+
+PDF RENDERING:
+  • pdfjs-dist renders all pages on load (scales to 100+ pages)
+  • Canvas rendering expensive for large PDFs
+  • Consider: Pagination, lazy rendering for 1000+ page PDFs
+  • Current: Acceptable for typical business documents (10-100 pages)
+
+STORAGE:
+  • IndexedDB limited to ~50MB per domain (browser-dependent)
+  • Large PDFs (10MB+) might not store session completely
+  • Fallback: localStorage + WEBSQL for compatibility
+
+DATABASE QUERIES:
+  • Indexes on frequently-filtered columns (isDeleted, adminId, role)
+  • Indexes on foreign keys (faster joins)
+  • No N+1 queries: Use Prisma include/select to fetch relations
+
+CACHING:
+  • Session stored in httpOnly cookie (no repeated database lookups)
+  • User info cached in JWT token
+  • Consider: Add Redis for multi-server deployments
+
+IMAGE DELIVERY:
+  • PDF thumbnails as data URLs (PNG): Large in memory
+  • Consider: Convert to WebP, lazy-load, or use thumbnail service
+
+================================================================================
+12. FUTURE IMPROVEMENTS & ROADMAP
+================================================================================
+
+POTENTIAL ENHANCEMENTS:
+  • Full-text search in PDF documents (OCR + indexing)
+  • Collaborative annotations on PDFs
+  • Bulk operations: Export multiple documents, mass delete
+  • Advanced filtering: By date range, owner, size
+  • Document versioning: Track changes over time
+  • Advanced analytics: Dashboard with charts (Recharts already included)
+  • Two-factor authentication (2FA) for admin login
+  • Email notifications: New documents, access grants, alerts
+  • Mobile app: React Native version for iOS/Android
+  • API rate limiting: Prevent abuse
+  • File virus scanning: Integrate ClamAV or similar
+  • Encryption: Encrypt documents at rest
+  • LDAP/Active Directory integration: Sync users from enterprise AD
+
+TECHNICAL DEBT:
+  • Error handling: More granular error messages + recovery
+  • Logging: Structured logging to external service
+  • Testing: Unit tests, integration tests, E2E tests
+  • Documentation: API docs (Swagger/OpenAPI)
+  • Code organization: Extract more reusable hooks/utils
+  • Type safety: Strengthen TypeScript types across codebase
+
+================================================================================
+13. TROUBLESHOOTING & COMMON ISSUES
+================================================================================
+
+ISSUE: Cannot find JWT_SECRET
+  FIX: Set JWT_SECRET environment variable before running
+       export JWT_SECRET="your-secret-key"
+       Or add to .env.local file
+
+ISSUE: Scanner bridge not detected
+  FIX: Ensure scanner bridge service running on port 4785
+       Check: curl http://localhost:4785/status
+       Check env var: echo $NEXT_PUBLIC_SCANNER_BRIDGE_URL
+       Verify in .env.local: NEXT_PUBLIC_SCANNER_BRIDGE_URL=http://localhost:4785
+       Error message guides user to start desktop app
+       Console logs show [Scanner] debug output for troubleshooting
+
+ISSUE: PDF upload fails
+  FIX: Check file is valid PDF (not corrupted)
+       Verify /public/uploads/{folderName}/ directory writable
+       Check disk space available
+       Inspect server logs for pdf-lib errors
+
+ISSUE: Session expires after 7 days
+  FIX: User must log in again
+       To extend: Modify JWT expiration time in lib/auth.ts
+       Change: .setExpirationTime('7d') → longer duration
+
+ISSUE: User blocked but can still login
+  FIX: Restart browser to clear cached session
+       Or clear auth-token cookie manually
+       Verify checkUserAccess() called in /api/auth/login
+
+ISSUE: Database connection refused
+  FIX: Verify DATABASE_URL is correct
+       Ping SQL Server host: telnet host port
+       Check firewall rules allowing connection
+       Verify SQL Server credentials
+
+================================================================================
+14. COMPLIANCE & LEGAL
+================================================================================
+
+DATA PROTECTION:
+  • Passwords hashed with bcrypt (not reversible)
+  • Audit logs immutable (prevent tampering)
+  • Soft deletes preserve history (GDPR: right to access)
+  • Consider: Add data retention policies, GDPR/CCPA compliance
+
+ACCESS CONTROL:
+  • Role-based permissions enforced at API level
+  • Audit log tracks who accessed/modified what
+  • User blocking prevents unauthorized access
+
+ENCRYPTION:
+  • Cookies transmitted over HTTPS (secure flag enabled)
+  • Consider: Add encryption at rest for sensitive PDFs
+
+COMPLIANCE FRAMEWORKS:
+  • GDPR: Right to access, right to be forgotten (soft delete)
+  • HIPAA: Audit logging, role-based access (if handling medical docs)
+  • SOC 2: Implement monitoring, incident response
+
+================================================================================
+END OF PROJECT ANALYSIS
+================================================================================
+
+Document Created: May 9, 2026
+Project Version: 0.1.0
+Analyzed By: GitHub Copilot
+
+For questions or updates to this analysis, review the source code files:
+  - package.json (dependencies)
+  - prisma/schema.prisma (database schema)
+  - app/api/* (API routes)
+  - app/*/page.tsx (pages)
+  - lib/* (utilities)
+
+================================================================================

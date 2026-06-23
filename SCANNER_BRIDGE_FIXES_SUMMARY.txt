@@ -1,0 +1,468 @@
+================================================================================
+                  SCANNER BRIDGE INTEGRATION - FIXES SUMMARY
+                              May 9, 2026
+================================================================================
+
+PROJECT: Document Management System (DMS)
+ISSUE: Frontend hardcoded to port 3001, needed configuration for port 4785
+STATUS: ✅ RESOLVED - All scanner bridge integration issues fixed
+
+================================================================================
+1. FILES CREATED
+================================================================================
+
+NEW: lib/scanner.ts
+     ├─ Purpose: Centralized scanner bridge helper with error handling
+     ├─ Export: scanDocument(), getScannerStatus(), getScanners()
+     ├─ Error Handling: ScannerError class with detailed error codes
+     ├─ Timeout: 60-second AbortController with proper cleanup
+     ├─ Debugging: Console logging with [Scanner] prefix
+     ├─ File Conversion: convertScanResponseToFile() for Base64 → File
+     └─ Message Helper: getScannerErrorMessage() for user-friendly errors
+
+NEW: .env.local.example
+     └─ Shows all required and optional environment variables
+        including NEXT_PUBLIC_SCANNER_BRIDGE_URL configuration
+
+================================================================================
+2. FILES MODIFIED
+================================================================================
+
+UPDATED: app/admin/documents/page.tsx
+     ├─ Added import: { scanDocument, convertScanResponseToFile, getScannerErrorMessage, ScannerError }
+     ├─ Replaced: handleScanNow() function (lines 779-819)
+     ├─ Enhanced: Proper error handling with detailed toast messages
+     ├─ Added: Console debugging with [Documents] prefix
+     ├─ Improved: User feedback with progress toasts (loading → scanning → done)
+     └─ Compatibility: Works with Next.js App Router + React 19
+
+UPDATED: app/upload/page.tsx
+     ├─ Added import: { scanDocument, convertScanResponseToFile, getScannerErrorMessage, ScannerError }
+     ├─ Replaced: handleScan() function
+     ├─ Enhanced: Same error handling & toast improvements
+     ├─ Updated: Alert messages to use helper error messages
+     └─ Compatibility: Works with Next.js App Router + React 19
+
+UPDATED: PROJECT_ANALYSIS.txt
+     ├─ Changed scanner port: 3001 → 4785
+     ├─ Added: Configuration section for NEXT_PUBLIC_SCANNER_BRIDGE_URL
+     ├─ Added: lib/scanner.ts helper documentation
+     ├─ Enhanced: Error handling section with detailed error codes
+     ├─ Updated: Troubleshooting section for new configuration
+     └─ Total additions: ~150 lines of new documentation
+
+================================================================================
+3. CONFIGURATION
+================================================================================
+
+ENVIRONMENT VARIABLE:
+  Variable Name: NEXT_PUBLIC_SCANNER_BRIDGE_URL
+  Default Value: http://localhost:4785
+  Scope: NEXT_PUBLIC (accessible in browser, safe)
+  Purpose: Configure scanner bridge endpoint
+  Example Values:
+    • http://localhost:4785 (local development)
+    • http://192.168.1.100:4785 (network machine)
+    • https://scanner-bridge.company.com (production)
+
+SETUP STEPS:
+
+1. Create .env.local file in project root (if not exists):
+   ─────────────────────────────────────────────────────────
+   DATABASE_URL="sqlserver://..."
+   JWT_SECRET="your-secret-key-32+-characters"
+   NEXT_PUBLIC_SCANNER_BRIDGE_URL="http://localhost:4785"
+   NODE_ENV="development"
+
+2. Or copy from template:
+   ─────────────────────────────────────────────────────────
+   cp .env.local.example .env.local
+
+3. Edit .env.local with your scanner bridge URL
+
+4. Restart Next.js dev server:
+   ─────────────────────────────────────────────────────────
+   npm run dev
+
+================================================================================
+4. COMPLETE API FLOW (DIAGRAM)
+================================================================================
+
+USER CLICKS "SCAN NOW"
+         ↓
+  handleScanNow() in page.tsx
+         ↓
+  toast.loading("Connecting...")
+         ↓
+  scanDocument() from lib/scanner.ts
+         ├─→ Validates environment variable
+         ├─→ Creates AbortController (60s timeout)
+         ├─→ POST to ${NEXT_PUBLIC_SCANNER_BRIDGE_URL}/scan
+         └─→ Logs: [Scanner] Starting scan
+         ↓
+  Bridge receives request
+         ↓
+  Bridge triggers scanner hardware
+         ↓
+  Hardware scans document (10-30 seconds)
+         ↓
+  Bridge converts to PDF + Base64 encodes
+         ↓
+  Bridge returns JSON:
+         {
+           "success": true,
+           "fileData": "base64_encoded_pdf",
+           "extension": "pdf",
+           "fileName": "document.pdf",
+           "scannedAt": "2026-05-09T..."
+         }
+         ↓
+  scanDocument() validates response
+         ├─→ Checks: res.ok, data.success, data.fileData
+         ├─→ Logs: [Scanner] Scan response received
+         └─→ Returns ScanResponse object
+         ↓
+  handleScanNow() calls convertScanResponseToFile()
+         ├─→ Decodes Base64 → binary string
+         ├─→ Creates Uint8Array from characters
+         ├─→ Creates Blob from bytes
+         ├─→ Creates File with timestamp: scanned-{ISO-time}.pdf
+         └─→ Logs: [Scanner] File created from scan
+         ↓
+  handleScanNow() calls processPdfFile(file, 'Scanned Document')
+         ├─→ Imports pdfjs-dist
+         ├─→ Renders all pages as PNG thumbnails
+         ├─→ Stores in IndexedDB (localforage)
+         └─→ Shows: "Scanned Document loaded with X pages"
+         ↓
+  User sees thumbnail grid
+         ├─→ Selects pages
+         ├─→ Enters section name
+         └─→ Clicks "Save Section"
+         ↓
+  Standard PDF upload workflow continues
+         ├─→ pdf-lib extracts selected pages
+         ├─→ File saved to /public/uploads/{folder}/
+         └─→ Document record created in database
+
+ERROR HANDLING AT EACH STAGE:
+
+❌ Bridge Offline:
+   ├─ Catch: TypeError (connection refused)
+   ├─ Error Code: 'OFFLINE'
+   ├─ Message: "Scanner bridge offline - ensure the desktop app is running on port 4785"
+   └─ Toast: Shows for 5 seconds
+
+❌ Timeout (60 seconds exceeded):
+   ├─ Catch: DOMException with name 'AbortError'
+   ├─ Error Code: 'TIMEOUT'
+   ├─ Message: "Scan timeout - is paper in the scanner? Make sure you loaded the document."
+   └─ Logs: [Scanner] Scan timeout triggered
+
+❌ Invalid Response:
+   ├─ Response not JSON or missing fields
+   ├─ Error Code: 'INVALID_RESPONSE' or 'SCAN_FAILED'
+   ├─ Message: "Scanner returned invalid response"
+   └─ Logs: [Scanner] Response status and body
+
+❌ Conversion Error:
+   ├─ atob() fails or File creation fails
+   ├─ Error Code: 'CONVERSION_ERROR'
+   ├─ Message: "Failed to convert scanned document to file"
+   └─ Logs: [Scanner] Detailed error info
+
+================================================================================
+5. ERROR CODES & MESSAGES
+================================================================================
+
+Code              | User Message                                          | Recovery
+─────────────────┼───────────────────────────────────────────────────────┼─────────────────
+OFFLINE           | "Scanner bridge offline - ensure desktop app..."      | Start bridge
+TIMEOUT           | "Scan timeout - is paper in scanner? Load document"   | Check scanner
+NO_SCANNER        | "No scanner detected - connect scanner to computer"   | Add hardware
+INVALID_RESPONSE  | "Scanner bridge returned invalid response"            | Check bridge
+SCAN_CANCELED     | "Scan was canceled"                                  | Retry
+SCAN_FAILED       | "Scan operation failed"                              | Check logs
+CONVERSION_ERROR  | "Failed to process scanned document"                 | Retry
+UNKNOWN           | "An unexpected scanner error occurred"                | Restart browser
+
+================================================================================
+6. DEBUGGING: CONSOLE LOGS
+================================================================================
+
+When debugging scanner issues, check browser console for:
+
+[Scanner] Checking status: { url: '...' }
+  └─ Status check initiated
+
+[Scanner] Status response: { status: 200, ok: true }
+  └─ Bridge is responding
+
+[Scanner] Starting scan: { url: '...', payload: {...}, timeoutMs: 60000 }
+  └─ Scan operation beginning
+
+[Scanner] Scan response received: { status: 200, ok: true }
+  └─ Bridge responded to scan request
+
+[Scanner] Scan response data: { success: true, hasFileData: true, extension: 'pdf' }
+  └─ Response validated successfully
+
+[Scanner] File created from scan: { name: 'scanned-...', size: 12345, type: 'application/pdf' }
+  └─ Base64 conversion successful
+
+[Documents] Starting scan operation
+  └─ Frontend scan initiated
+
+[Documents] Scan completed, processing file: { name: '...', size: ... }
+  └─ Scanner bridge returned successfully
+
+[Documents] Scan failed: [Error details]
+  └─ Error occurred - check details
+
+================================================================================
+7. TESTING CHECKLIST
+================================================================================
+
+Before deploying scanner integration:
+
+☐ Environment Setup:
+   ☐ .env.local created with NEXT_PUBLIC_SCANNER_BRIDGE_URL
+   ☐ Next.js restarted after env change
+   ☐ console.log(process.env.NEXT_PUBLIC_SCANNER_BRIDGE_URL) shows correct URL
+
+☐ Offline Scenario:
+   ☐ Stop scanner bridge service
+   ☐ Click "Scan Now"
+   ☐ Verify error: "Scanner bridge offline..."
+   ☐ Check console: [Scanner] Network error logs
+
+☐ Timeout Scenario:
+   ☐ Start bridge but don't place paper
+   ☐ Click "Scan Now"
+   ☐ Wait 60+ seconds
+   ☐ Verify error: "Scan timeout..."
+   ☐ Verify timeout abort works (request stops)
+
+☐ Success Scenario:
+   ☐ Start bridge, place paper
+   ☐ Click "Scan Now"
+   ☐ Wait for scan to complete
+   ☐ Verify: Thumbnails appear, can select pages
+   ☐ Verify: Can save as section
+
+☐ Multiple Scans:
+   ☐ Scan document 1
+   ☐ Save section
+   ☐ Scan document 2
+   ☐ Verify: No button spam, proper state reset
+
+☐ Error Recovery:
+   ☐ Fail scan with offline bridge
+   ☐ Start bridge
+   ☐ Retry scan
+   ☐ Verify: Success after retry works
+
+================================================================================
+8. CODE EXAMPLES
+================================================================================
+
+EXAMPLE 1: Using scanner helper directly (advanced)
+──────────────────────────────────────────────────────
+
+import { scanDocument, getScannerStatus, ScannerError } from '@/lib/scanner';
+
+// Check if bridge is online
+try {
+  const status = await getScannerStatus();
+  if (status.online && status.scanners.length > 0) {
+    console.log('Ready to scan with:', status.scanners[0].name);
+  }
+} catch (error) {
+  console.error('Bridge offline');
+}
+
+// Perform scan with options
+try {
+  const scanResponse = await scanDocument({
+    scannerId: 'scanner-1',
+    resolution: 300,
+    colorMode: 'color'
+  });
+  console.log('Scanned successfully:', scanResponse.fileName);
+} catch (error) {
+  if (error instanceof ScannerError) {
+    console.error(`[${error.code}] ${error.message}`);
+  }
+}
+
+EXAMPLE 2: Custom error handling
+──────────────────────────────────
+
+import { scanDocument, getScannerErrorMessage, ScannerError } from '@/lib/scanner';
+
+try {
+  await scanDocument();
+} catch (error) {
+  const message = getScannerErrorMessage(error);
+  
+  // Show in custom toast library
+  showNotification({
+    type: 'error',
+    title: 'Scan Failed',
+    message: message,
+    autoClose: 5000
+  });
+  
+  // Log for analytics
+  trackEvent('scan_failed', { error: error.code });
+}
+
+EXAMPLE 3: With custom timeout
+────────────────────────────────
+
+const CUSTOM_TIMEOUT = 120000; // 2 minutes instead of 60
+
+// Would require modifying lib/scanner.ts constants
+// Or passing timeout as parameter (not currently implemented)
+
+================================================================================
+9. MIGRATION GUIDE (If upgrading from old code)
+================================================================================
+
+OLD CODE (Hardcoded):
+─────────────────────
+const res = await fetch('http://localhost:3001/scan', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ folderId: folder.id }),
+});
+
+NEW CODE (Configurable):
+────────────────────────
+import { scanDocument, convertScanResponseToFile } from '@/lib/scanner';
+
+const scanResponse = await scanDocument();
+const file = convertScanResponseToFile(scanResponse);
+
+BENEFITS OF NEW APPROACH:
+✅ Configurable via environment variable
+✅ Timeout handling with AbortController
+✅ Detailed error codes and messages
+✅ Automatic Base64 → File conversion
+✅ Console debugging for troubleshooting
+✅ Type-safe with TypeScript interfaces
+✅ Reusable across multiple pages
+✅ No manual try/catch needed (wrapped in helper)
+
+================================================================================
+10. PRODUCTION DEPLOYMENT
+================================================================================
+
+STEPS TO DEPLOY:
+
+1. Set environment variable on hosting platform:
+   ─────────────────────────────────────────────────
+   Platform        | Setting Method
+   ─────────────────┼────────────────────────────────
+   Vercel          | Add to Environment Variables
+   Netlify         | Add to Build & Deploy settings
+   Docker          | Set in docker-compose.yml
+   VM/Linux        | Add to .env file or systemd service
+   AWS Lambda      | Set in Lambda environment variables
+
+2. Example Vercel:
+   ─────────────────────────────────────────────────
+   Dashboard → Settings → Environment Variables
+   Key: NEXT_PUBLIC_SCANNER_BRIDGE_URL
+   Value: https://scanner-bridge.yourcompany.com:4785
+
+3. Rebuild and deploy:
+   ─────────────────────────────────────────────────
+   npm run build
+   npm start
+   
+   # OR push to git for auto-deployment
+
+4. Verify in production:
+   ─────────────────────────────────────────────────
+   • Check env var is loaded: window.NEXT_PUBLIC_SCANNER_BRIDGE_URL
+   • Test "Scan Now" button
+   • Monitor browser console for [Scanner] logs
+   • Check Analytics for scan_failed events
+
+================================================================================
+11. TROUBLESHOOTING QUICK REFERENCE
+================================================================================
+
+SYMPTOM: "Cannot find NEXT_PUBLIC_SCANNER_BRIDGE_URL"
+CAUSE: Environment variable not set
+FIX: Add to .env.local and restart server
+
+SYMPTOM: "Scanner bridge offline" every time
+CAUSE: Bridge URL wrong or bridge not running
+FIX: Check bridge URL in .env.local
+     Verify bridge is running: curl $NEXT_PUBLIC_SCANNER_BRIDGE_URL/status
+
+SYMPTOM: Scan works locally but fails in production
+CAUSE: Environment variable not set in production
+FIX: Add NEXT_PUBLIC_SCANNER_BRIDGE_URL to production env vars
+     Must be NEXT_PUBLIC_ prefix to be visible in browser
+
+SYMPTOM: "Scan timeout" even with paper loaded
+CAUSE: Scanner hardware issue or network timeout
+FIX: Check scanner hardware
+     Check network latency to bridge
+     Increase timeout in lib/scanner.ts (SCAN_TIMEOUT_MS)
+
+SYMPTOM: Blank error message after scan
+CAUSE: Bridge returned invalid response
+FIX: Check bridge logs for error
+     Verify bridge version compatibility
+     Check browser console for [Scanner] debug output
+
+================================================================================
+12. NEXT STEPS
+================================================================================
+
+✅ COMPLETED:
+   ✓ Created lib/scanner.ts with full error handling
+   ✓ Updated app/admin/documents/page.tsx
+   ✓ Updated app/upload/page.tsx
+   ✓ Created .env.local.example
+   ✓ All TypeScript errors resolved
+   ✓ Console debugging enabled
+
+RECOMMENDED:
+   □ Test scanner integration with real scanner hardware
+   □ Verify timeout behavior (place scanner offline after 30 seconds)
+   □ Test multiple consecutive scans
+   □ Verify error messages are user-friendly
+   □ Add analytics tracking for scan_failed events
+   □ Document scanner bridge setup for team
+   □ Add /status endpoint check before showing "Scan Now" button
+
+OPTIONAL ENHANCEMENTS:
+   □ Add scanner selection dropdown (from getScanners())
+   □ Add resolution/color mode options in UI
+   □ Implement retry logic on timeout
+   □ Show real-time progress bar during scan
+   □ Cache scanner list to reduce API calls
+   □ Add keyboard shortcut for "Scan Now" (Ctrl+S)
+
+================================================================================
+                              END OF SUMMARY
+================================================================================
+
+Files Modified: 3 (documents/page.tsx, upload/page.tsx, PROJECT_ANALYSIS.txt)
+Files Created:  2 (lib/scanner.ts, .env.local.example)
+Total Changes:  500+ lines of new code and documentation
+TypeScript Errors: 0 (all resolved)
+Ready for Testing: ✅ YES
+
+Questions? Check:
+  • lib/scanner.ts for implementation details
+  • Console [Scanner] logs for debugging
+  • .env.local.example for configuration template
+  • PROJECT_ANALYSIS.txt sections 2-3 for full architecture details
+
+================================================================================

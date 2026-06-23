@@ -2,6 +2,8 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { PDFDocument } from 'pdf-lib';
+import { convertScanResponseToFile } from '@/lib/scanner';
+import { useScannerWebSocket } from '@/lib/useScannerWebSocket';
 
 export default function UploadSplit() {
   const router = useRouter();
@@ -12,6 +14,9 @@ export default function UploadSplit() {
   const [selectedPages, setSelectedPages] = useState<number[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoadingPages, setIsLoadingPages] = useState(false);
+
+  const WS_URL = (process.env.NEXT_PUBLIC_SCANNER_BRIDGE_URL || 'http://localhost:4785').replace('http', 'ws');
+  const { session, startScan, cancelScan, resetSession } = useScannerWebSocket(WS_URL);
 
   // Check auth on load
   useEffect(() => {
@@ -25,6 +30,39 @@ export default function UploadSplit() {
         router.replace('/login?expired=1');
       });
   }, [router]);
+
+  // Listen for scan completion from WS
+  useEffect(() => {
+    if (session.status === 'COMPLETED' && session.fileData && !file) {
+      console.log('FINAL FILE DATA', session.fileData);
+      try {
+        const scanResponse = { success: true, fileData: session.fileData, extension: 'pdf' };
+        const scannedFile = convertScanResponseToFile(scanResponse as any);
+        console.log('Converted scan file', scannedFile);
+        setFile(scannedFile);
+        setIsLoadingPages(true);
+        scannedFile.arrayBuffer()
+          .then(arrayBuffer => PDFDocument.load(arrayBuffer))
+          .then(pdf => {
+            setAvailablePages(Array.from({ length: pdf.getPageCount() }, (_, i) => i + 1));
+            setIsLoadingPages(false);
+          })
+          .catch(error => {
+            console.error('[Upload] Error reading scanned PDF pages:', error);
+            alert('Unable to read scanned PDF pages. Please try again.');
+            setIsLoadingPages(false);
+          });
+      } catch (e) {
+        console.error(e);
+        alert('Failed to process completed scan.');
+      }
+    }
+  }, [session.status, session.fileData, file]);
+
+  const handleScan = () => {
+    setFile(null); // Clear previous
+    startScan();
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -101,7 +139,59 @@ export default function UploadSplit() {
         <h1 className="text-3xl font-bold mb-6 text-gray-800">Process PDF</h1>
         
         {!file && (
-          <input type="file" accept="application/pdf" onChange={handleFileUpload} className="mb-6 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
+          <>
+            <input type="file" accept="application/pdf" onChange={handleFileUpload} className="mb-6 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
+            
+            <div className="border border-gray-200 rounded-lg bg-gray-50 p-5 mb-6">
+              <h3 className="text-lg font-semibold text-gray-900">Scan Document</h3>
+              <p className="text-sm text-gray-600 mb-4">
+                Scan directly from your desktop scanner bridge and process the scanned PDF.
+              </p>
+              
+              {['IDLE', 'ERROR', 'COMPLETED'].includes(session.status) ? (
+                <button
+                  onClick={handleScan}
+                  className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+                >
+                  Scan Now
+                </button>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between bg-blue-50 p-4 rounded-lg border border-blue-200">
+                    <div className="flex items-center gap-3">
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                      <span className="font-semibold text-blue-800">{session.progressMessage}</span>
+                    </div>
+                    <button onClick={cancelScan} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded text-sm font-semibold transition-colors">
+                      Cancel Scan
+                    </button>
+                  </div>
+                  
+                  {session.scannedPages.length > 0 && (
+                    <div className="mt-4">
+                      <p className="text-sm font-medium text-gray-700 mb-2">Scanned Pages ({session.scannedPages.length}):</p>
+                      <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto p-2 border bg-white rounded-lg">
+                        {(() => { console.log('Rendering scanned pages', session.scannedPages); return null; })()}
+                        {session.scannedPages.map((imgSrc, idx) => (
+                          <div key={idx} className="w-16 h-20 border rounded overflow-hidden shadow-sm">
+                            <img src={imgSrc} alt={`Page ${idx + 1}`} className="w-full h-full object-cover" onError={(e) => {
+                              console.error('Image failed', imgSrc);
+                            }} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {session.status === 'ERROR' && (
+                <div className="mt-4 p-3 bg-red-50 text-red-700 border border-red-200 rounded-lg text-sm">
+                  <strong>Error:</strong> {session.errorDetails}
+                </div>
+              )}
+            </div>
+          </>
         )}
 
         {file && availablePages.length > 0 && (
